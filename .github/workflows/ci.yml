@@ -1,0 +1,43 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  editor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-results
+          path: test-results/
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run build:mac
+      - run: build/TyporaX.app/Contents/MacOS/TyporaX --web-smoke-test
+      - run: build/TyporaX.app/Contents/MacOS/TyporaX --pdf-self-test
+      - run: ditto -c -k --sequesterRsrc --keepParent build/TyporaX.app build/TyporaX-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TyporaX-macOS
+          path: build/TyporaX-macOS.zip
