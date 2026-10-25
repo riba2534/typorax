@@ -1,5 +1,5 @@
 export type NativeDocument = { id: string; path: string | null; name: string; content: string };
-export type Folder = { path: string; name: string; files: { path: string; name: string }[] };
+export type Folder = { path: string; name: string; truncated?: boolean; files: { path: string; name: string; relativePath?: string }[] };
 declare global {
   interface Window {
     webkit?: { messageHandlers: { typorax?: { postMessage: (body: unknown) => void } } };
@@ -60,7 +60,7 @@ async function browserCall(method: string, params: Record<string, any>): Promise
       const url = await fileDataURL(file);
       return { url, markdownPath: url };
     }
-    case 'setDirty': case 'closeConfirmed': return null;
+    case 'ready': case 'setDirty': case 'closeConfirmed': return null;
     case 'openFolder': throw new Error('文件夹工作区在 macOS 桌面应用中可用。浏览器预览可打开单个文件。');
     case 'revealFile': return null;
     default: throw new Error('此操作需要 TyporaX macOS 应用：' + method);

@@ -5,7 +5,16 @@ import UniformTypeIdentifiers
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
     var webView: WKWebView!
-    let files = FileStore()
+    let files: FileStore
+    let isolatedSession: Bool
+    // Tests inject only native dialog results; file operations and bridge dispatch remain production code.
+    var selectionProvider: ((String) -> URL?)?
+    var closeChoiceProvider: (() -> NSApplication.ModalResponse)?
+    var readyObserver: (() -> Void)?
+    var bootstrapObserver: (() -> Void)?
+    var windowClosedObserver: (() -> Void)?
+    var failureObserver: ((String) -> Void)?
+    var initialScripts: [String] = []
     var dirty = false
     var closeAllowed = false
     var pendingQuit = false
@@ -14,6 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
     var pendingCommands: [String] = []
     var pdfJobs: [UUID: PDFExportJob] = [:]
     let markdownTypes: [UTType] = [.plainText, UTType(filenameExtension: "md") ?? .plainText, UTType(filenameExtension: "markdown") ?? .plainText]
+
+    init(defaults: UserDefaults = .standard, isolatedSession: Bool = false) {
+        files = FileStore(defaults: defaults)
+        self.isolatedSession = isolatedSession
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         makeMenus()
@@ -24,7 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
             configuration.userContentController.addUserScript(WKUserScript(source: capture, injectionTime: .atDocumentStart, forMainFrameOnly: true))
             DispatchQueue.main.asyncAfter(deadline: .now() + 20) { fputs("TyporaX WebKit smoke test: TIMEOUT\n", stderr); exit(1) }
         }
-        configuration.websiteDataStore = .default()
+        configuration.websiteDataStore = isolatedSession ? .nonPersistent() : .default()
+        for script in initialScripts {
+            configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         // The offline application bundle has no arbitrary local-file access.
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -40,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         window.minSize = NSSize(width: 760, height: 540)
         window.delegate = self
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("TyporaXMainWindow")
+        if !isolatedSession { window.setFrameAutosaveName("TyporaXMainWindow") }
         window.contentView = webView
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -52,7 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         webView.loadFileURL(webRoot.appendingPathComponent("index.html"), allowingReadAccessTo: webRoot)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !isolatedSession }
+    func windowWillClose(_ notification: Notification) { windowClosedObserver?() }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
@@ -81,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")
         alert.addButton(withTitle: "不保存")
-        switch alert.runModal() {
+        switch closeChoiceProvider?() ?? alert.runModal() {
         case .alertFirstButtonReturn:
             pendingQuit = quit
             command("saveAndClose")
@@ -167,6 +186,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         if let encoded = jsonString(doc) { webView.evaluateJavaScript("window.__typoraxOpenDocument && window.__typoraxOpenDocument(\(encoded))", completionHandler: nil) }
     }
 
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { webReady = false }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard CommandLine.arguments.contains("--web-smoke-test") else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
@@ -231,24 +252,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         do {
             switch method {
             case "bootstrap":
+                webReady = false
                 var state = files.bootstrap()
-                if !pendingDocuments.isEmpty { state["documents"] = pendingDocuments; pendingDocuments = [] }
+                var documents = state["documents"] as? [[String: Any]] ?? []
+                state["activePath"] = pendingDocuments.last?["path"] ?? NSNull()
+                for document in pendingDocuments {
+                    if !documents.contains(where: { $0["path"] as? String == document["path"] as? String }) { documents.append(document) }
+                }
+                state["documents"] = documents
+                pendingDocuments = []
                 respond(state)
+                bootstrapObserver?()
+            case "ready":
                 webReady = true
+                respond(["ok": true])
+                let documents = pendingDocuments; pendingDocuments = []
                 let commands = pendingCommands; pendingCommands = []
-                DispatchQueue.main.async { commands.forEach(self.command) }
+                documents.forEach(deliverDocument)
+                commands.forEach(command)
+                readyObserver?()
             case "openFile":
                 let panel = NSOpenPanel(); panel.allowedContentTypes = markdownTypes; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
                 panel.message = "选择 Markdown 或纯文本文件"
-                panel.beginSheetModal(for: window) { response in
-                    guard response == .OK, let url = panel.url else { respond(NSNull()); return }
+                chooseURL("openFile", panel: panel) { url in
+                    guard let url else { respond(NSNull()); return }
                     do { self.files.admitFile(url); respond(try self.files.document(url)) } catch { fail(error) }
                 }
             case "openFolder":
                 let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
                 panel.message = "选择你的 Markdown 文稿文件夹"
-                panel.beginSheetModal(for: window) { response in
-                    guard response == .OK, let url = panel.url else { respond(NSNull()); return }
+                chooseURL("openFolder", panel: panel) { url in
+                    guard let url else { respond(NSNull()); return }
                     do { self.files.admitFolder(url); respond(try self.files.folder(url)) } catch { fail(error) }
                 }
             case "readFile":
@@ -263,8 +297,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
                     let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]; panel.canCreateDirectories = true
                     panel.nameFieldStringValue = safeName(params["name"] as? String ?? "未命名.md", extension: "md")
                     if let oldPath = params["path"] as? String { panel.directoryURL = URL(fileURLWithPath: oldPath).deletingLastPathComponent() }
-                    panel.beginSheetModal(for: window) { response in
-                        guard response == .OK, let url = panel.url else { respond(NSNull()); return }
+                    chooseURL("saveFile", panel: panel) { url in
+                        guard let url else { respond(NSNull()); return }
                         do { respond(try self.files.save(url, content: content, pickerAuthorized: true)) } catch { fail(error) }
                     }
                 }
@@ -272,16 +306,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
                 let html = try requiredString(params, "html", emptyAllowed: true)
                 let panel = NSSavePanel(); panel.allowedContentTypes = [.html]; panel.canCreateDirectories = true
                 panel.nameFieldStringValue = safeName(params["name"] as? String ?? "文稿", extension: "html")
-                panel.beginSheetModal(for: window) { response in
-                    guard response == .OK, let url = panel.url else { respond(NSNull()); return }
+                chooseURL("exportHTML", panel: panel) { url in
+                    guard let url else { respond(NSNull()); return }
                     do { try self.files.export(url, content: html); respond(["path": url.path]) } catch { fail(error) }
                 }
             case "exportPDF":
                 let html = try requiredString(params, "html")
                 let panel = NSSavePanel(); panel.allowedContentTypes = [.pdf]; panel.canCreateDirectories = true
                 panel.nameFieldStringValue = safeName(params["name"] as? String ?? "文稿", extension: "pdf")
-                panel.beginSheetModal(for: window) { response in
-                    guard response == .OK, let url = panel.url else { respond(NSNull()); return }
+                chooseURL("exportPDF", panel: panel) { url in
+                    guard let url else { respond(NSNull()); return }
                     let jobId = UUID()
                     let job = PDFExportJob(html: html, output: url) { result in
                         self.pdfJobs.removeValue(forKey: jobId)
@@ -292,8 +326,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
             case "chooseImage":
                 let panel = NSOpenPanel(); panel.allowedContentTypes = [.png, .jpeg, .gif, .bmp, UTType(filenameExtension: "webp") ?? .image]; panel.canChooseDirectories = false
                 panel.message = "插入图片（以自包含形式保存在 Markdown 中）"
-                panel.beginSheetModal(for: window) { response in
-                    guard response == .OK, let url = panel.url else { respond(NSNull()); return }
+                chooseURL("chooseImage", panel: panel) { url in
+                    guard let url else { respond(NSNull()); return }
                     do { respond(try self.files.image(url)) } catch { fail(error) }
                 }
             case "resolveImage":
@@ -316,6 +350,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         } catch { fail(error) }
     }
 
+    private func chooseURL(_ operation: String, panel: NSSavePanel, completion: @escaping (URL?) -> Void) {
+        if let provider = selectionProvider { completion(provider(operation)); return }
+        panel.beginSheetModal(for: window) { response in completion(response == .OK ? panel.url : nil) }
+    }
+
     func requiredString(_ params: [String: Any], _ name: String, emptyAllowed: Bool = false) throws -> String {
         guard let value = params[name] as? String, emptyAllowed || !value.isEmpty else { throw TyporaXError.invalid("缺少参数：\(name)") }
         return value
@@ -334,6 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
     }
 
     func showError(_ message: String) {
+        if let observer = failureObserver { observer(message); return }
         let alert = NSAlert(); alert.alertStyle = .warning; alert.messageText = "TyporaX"; alert.informativeText = message
         alert.addButton(withTitle: "好"); alert.runModal()
     }

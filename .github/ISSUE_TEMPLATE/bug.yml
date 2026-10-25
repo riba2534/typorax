@@ -1,0 +1,24 @@
+name: 问题反馈
+description: 报告可复现的编辑、文件、导出或界面问题
+title: "[Bug] "
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 版本和环境
+      description: TyporaX 版本、macOS 版本、Apple Silicon 或 Intel
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开应用开始，描述操作、预期结果和实际结果。
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: 最小 Markdown 样例或错误信息
+      description: 请移除个人信息。文件保存问题请说明是否同时使用了其他编辑器。
+      render: markdown

@@ -12,7 +12,7 @@ mkdir -p "$bundle_path/Contents/MacOS" "$bundle_path/Contents/Resources"
 xcrun swiftc -swift-version 5 -O -target "$build_arch-apple-macosx14.0" \
   -framework AppKit -framework WebKit -framework UniformTypeIdentifiers -framework PDFKit \
   "$project_root/native/FileStore.swift" "$project_root/native/App.swift" \
-  "$project_root/native/SelfTests.swift" "$project_root/native/main.swift" \
+  "$project_root/native/SelfTests.swift" "$project_root/native/NativeIntegrationTests.swift" "$project_root/native/main.swift" \
   -o "$bundle_path/Contents/MacOS/TyporaX"
 cp "$project_root/native/Info.plist" "$bundle_path/Contents/Info.plist"
 if [ -d "$bundle_path/Contents/Resources/web" ]; then
@@ -22,7 +22,7 @@ ditto "$project_root/dist" "$bundle_path/Contents/Resources/web"
 if [ -f "$project_root/LICENSE" ]; then cp "$project_root/LICENSE" "$bundle_path/Contents/Resources/LICENSE"; fi
 if [ -f "$project_root/THIRD_PARTY_NOTICES.md" ]; then cp "$project_root/THIRD_PARTY_NOTICES.md" "$bundle_path/Contents/Resources/THIRD_PARTY_NOTICES.md"; fi
 if [ -f "$project_root/scripts/icon.swift" ]; then
-  xcrun swift "$project_root/scripts/icon.swift" "$project_root/build/AppIcon.iconset"
+  xcrun swift "$project_root/scripts/icon.swift" "$project_root/build/AppIcon.iconset" "$project_root/assets/logo.png"
   iconutil -c icns "$project_root/build/AppIcon.iconset" -o "$bundle_path/Contents/Resources/AppIcon.icns"
 fi
 codesign --force --sign - "$bundle_path"

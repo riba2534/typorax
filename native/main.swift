@@ -16,7 +16,20 @@ if CommandLine.arguments.contains("--self-test") {
 
 let application = NSApplication.shared
 var pdfTestJob: PDFExportJob?
-if CommandLine.arguments.contains("--pdf-self-test") {
+if CommandLine.arguments.contains("--integration-self-test") {
+    MainActor.assumeIsolated {
+        do {
+            let runner = try NativeIntegrationTests()
+            application.delegate = runner.delegate
+            application.setActivationPolicy(.regular)
+            runner.startTimeout()
+            withExtendedLifetime(runner) { application.run() }
+        } catch {
+            fputs("TyporaX native integration: FAIL: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+    }
+} else if CommandLine.arguments.contains("--pdf-self-test") {
     application.setActivationPolicy(.prohibited)
     let output = FileManager.default.temporaryDirectory.appendingPathComponent("typorax-pdf-test-" + UUID().uuidString + ".pdf")
     let paragraphs = (1...90).map { "<p>Paragraph \($0): Offline Markdown export — 中文文稿。</p>" }.joined()
@@ -45,7 +58,9 @@ if CommandLine.arguments.contains("--pdf-self-test") {
     DispatchQueue.main.async { pdfTestJob?.start() }
     application.run()
 } else {
-    let delegate = AppDelegate()
+    let smokeTest = CommandLine.arguments.contains("--web-smoke-test")
+    let defaults = smokeTest ? UserDefaults(suiteName: "com.riba2534.typorax.smoke." + UUID().uuidString)! : .standard
+    let delegate = AppDelegate(defaults: defaults, isolatedSession: smokeTest)
     application.delegate = delegate
     application.setActivationPolicy(.regular)
     application.run()

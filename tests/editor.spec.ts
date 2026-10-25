@@ -427,3 +427,341 @@ for (const mode of ['visual', 'source'] as const) {
     await expect(surface).not.toContainText('alpha');
   });
 }
+
+test('toolbar headings and text marks format the selection and serialize it', async ({ page }) => {
+  await start(page);
+  await page.locator('#new-document').click();
+  await visual(page).fill('Toolbar content');
+  for (const level of [1, 2, 3]) {
+    await page.locator(`[data-format="heading${level}"]`).click();
+    await expect(visual(page).locator(`h${level}`)).toHaveText('Toolbar content');
+    await expect(page.locator(`[data-format="heading${level}"]`)).toHaveAttribute('aria-pressed', 'true');
+  }
+  await visual(page).press('ControlOrMeta+a');
+  for (const [format, tag] of [['bold', 'strong'], ['italic', 'em'], ['strike', 's']]) {
+    await page.locator(`[data-format="${format}"]`).click();
+    await expect(visual(page).locator(tag)).toHaveText('Toolbar content');
+  }
+  const markdown = (await download(page, 'save')).content;
+  expect(markdown).toMatch(/^### /);
+  expect(markdown).toContain('**');
+  expect(markdown).toContain('~~');
+  await page.locator('#toggle-source').click();
+  await page.locator('#toggle-source').click();
+  await expect(visual(page).locator('h3 strong em s, h3 strong s em, h3 em strong s, h3 em s strong, h3 s strong em, h3 s em strong')).toHaveText('Toolbar content');
+});
+
+test('toolbar lists, quotes, code blocks, and horizontal rules change document structure', async ({ page }) => {
+  await start(page);
+  for (const [format, selector, markdown] of [
+    ['bulletList', 'ul:not([data-type="taskList"]) li', '- Block text'],
+    ['orderedList', 'ol li', '1. Block text'],
+    ['taskList', 'li:has(input[type="checkbox"])', '- [ ] Block text'],
+    ['blockquote', 'blockquote', '> Block text'],
+    ['codeBlock', 'pre code', '```'],
+  ]) {
+    await page.locator('#new-document').click();
+    await visual(page).fill('Block text');
+    await page.locator(`[data-format="${format}"]`).click();
+    await expect(visual(page).locator(selector)).toContainText('Block text');
+    expect((await download(page, 'save')).content).toContain(markdown);
+  }
+  await page.locator('#new-document').click();
+  await visual(page).fill('Before divider');
+  await page.locator('[data-format="horizontalRule"]').click();
+  await expect(visual(page).locator('hr')).toHaveCount(1);
+  expect((await download(page, 'save')).content).toContain('---');
+});
+
+test('link dialogs confirm, cancel, escape, and reject unsafe URLs without losing text', async ({ page }) => {
+  await start(page);
+  await page.locator('#new-document').click();
+  await visual(page).fill('Selected label');
+  await visual(page).press('ControlOrMeta+a');
+  await page.locator('[data-format="link"]').click();
+  await page.locator('#dialog-input').fill('https://example.com/original');
+  await page.locator('#dialog-confirm').click();
+  const link = visual(page).locator('a');
+  await expect(link).toHaveAttribute('href', 'https://example.com/original');
+  await expect(link).toHaveText('Selected label');
+  for (const cancellation of ['button', 'escape']) {
+    await link.click();
+    await page.locator('[data-format="link"]').click();
+    await page.locator('#dialog-input').fill('https://example.com/cancelled');
+    if (cancellation === 'button') await page.locator('#dialog-cancel').click();
+    else await page.locator('#dialog-input').press('Escape');
+    await expect(page.locator('#input-dialog')).not.toBeVisible();
+    await expect(link).toHaveAttribute('href', 'https://example.com/original');
+  }
+  await link.click();
+  await page.locator('[data-format="link"]').click();
+  await page.locator('#dialog-input').fill('javascript:alert(1)');
+  await page.locator('#dialog-confirm').click();
+  await expect(page.locator('#toast')).toContainText('链接需以');
+  await expect(link).toHaveAttribute('href', 'https://example.com/original');
+  await link.click();
+  await page.locator('[data-format="link"]').click();
+  await page.locator('#dialog-input').fill('');
+  await page.locator('#dialog-confirm').click();
+  await expect(link).toHaveCount(0);
+  await expect(visual(page)).toHaveText('Selected label');
+});
+
+test('table toolbar inserts editable cells and preserves their values on source round trips', async ({ page }) => {
+  await start(page);
+  await page.locator('#new-document').click();
+  await page.locator('[data-format="table"]').click();
+  const table = visual(page).locator('table');
+  await expect(table.locator('tr')).toHaveCount(3);
+  await table.locator('th').first().click();
+  await page.keyboard.type('Item');
+  await page.keyboard.press('Tab');
+  await page.keyboard.type('Count');
+  await table.locator('td').first().click();
+  await page.keyboard.type('Apples');
+  await page.keyboard.press('Tab');
+  await page.keyboard.type('12');
+  await page.locator('#toggle-source').click();
+  await expect(source(page)).toContainText('Apples');
+  await page.locator('#toggle-source').click();
+  await expect(table.locator('th').first()).toHaveText('Item');
+  await expect(table.locator('td').first()).toHaveText('Apples');
+  expect((await download(page, 'save')).content).toMatch(/\| Apples\s*\| 12\s*\|/);
+});
+
+test('math dialogs edit inline and block formulas and export the changed equations', async ({ page }) => {
+  await start(page);
+  await openMarkdown(page, 'Inline $x+1$.\n\n$$\ny^2\n$$\n');
+  const math = visual(page).locator('.tiptap-mathematics-render .katex-html');
+  await math.first().click();
+  await expect(page.locator('#dialog-input')).toHaveValue('x+1');
+  await page.locator('#dialog-input').fill('x+2');
+  await page.locator('#dialog-input').press('Enter');
+  await math.last().click();
+  await page.locator('#dialog-input').fill('z^3');
+  await page.locator('#dialog-confirm').click();
+  await math.last().click();
+  await page.locator('#dialog-input').fill('cancelled');
+  await page.locator('#dialog-input').press('Escape');
+  const saved = (await download(page, 'save')).content;
+  expect(saved).toContain('$x+2$');
+  expect(saved).toContain('z^3');
+  expect(saved).not.toContain('cancelled');
+  const exported = await download(page, 'exportHTML');
+  await page.setContent(exported.content);
+  await expect(page.locator('.katex')).toHaveCount(2);
+  await expect(page.locator('annotation').first()).toHaveText('x+2');
+  await expect(page.locator('annotation').last()).toHaveText('z^3');
+});
+
+const tinyPNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
+for (const mode of ['visual', 'source'] as const) {
+  test(`image insertion in ${mode} mode remains visible and exports a self-contained image`, async ({ page }) => {
+    await start(page);
+    await page.locator('#new-document').click();
+    if (mode === 'source') await page.locator('#toggle-source').click();
+    const picker = page.waitForEvent('filechooser');
+    await menu(page, 'insertImage');
+    await (await picker).setFiles({ name: 'pixel.png', mimeType: 'image/png', buffer: Buffer.from(tinyPNG, 'base64') });
+    if (mode === 'source') {
+      await expect(source(page)).toContainText('data:image/png;base64,');
+      await page.locator('#toggle-source').click();
+    }
+    const img = visual(page).locator('img');
+    await expect(img).toBeVisible();
+    await expect.poll(() => img.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(1);
+    expect((await download(page, 'save')).content).toContain(tinyPNG);
+    const exported = await download(page, 'exportHTML');
+    await page.setContent(exported.content);
+    await expect(page.locator('img')).toHaveAttribute('src', 'data:image/png;base64,' + tinyPNG);
+    await expect.poll(() => page.locator('img').evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(1);
+  });
+}
+
+test('file filtering, outline navigation, and the sidebar preserve the current document', async ({ page }) => {
+  await start(page);
+  const padding = Array.from({ length: 35 }, (_, index) => 'Paragraph ' + index + '.').join('\n\n');
+  await openMarkdown(page, '# First heading\n\n' + padding + '\n\n## Last heading\n\nTail text.', 'outline.md');
+  await page.locator('#file-search').fill('OUTLINE');
+  await expect(page.locator('#file-list .file-item')).toHaveCount(1);
+  await page.locator('#file-search').fill('does-not-exist');
+  await expect(page.locator('#file-list')).toHaveText('没有匹配的文档');
+  await page.locator('#file-search').fill('');
+  await page.getByRole('tab', { name: '大纲', exact: true }).click();
+  await expect(page.locator('#outline-list button')).toHaveText(['First heading', 'Last heading']);
+  await page.locator('#outline-list button').last().click();
+  await expect(visual(page).locator('h2')).toBeInViewport();
+  await page.locator('#toggle-source').click();
+  await page.locator('#outline-list button').first().click();
+  await expect(page.locator('#cursor-position')).toHaveText('Ln 1, Col 1');
+  await page.locator('#toggle-sidebar').click();
+  await expect(page.locator('#sidebar')).toBeHidden();
+  await page.locator('#toggle-sidebar').click();
+  await expect(page.locator('#sidebar')).toBeVisible();
+  await expect(page.locator('#document-name')).toHaveText('outline.md');
+});
+
+test('outline follows actual headings and ignores different fence markers inside code', async ({ page }) => {
+  await start(page);
+  await openMarkdown(page, 'Setext heading\n==============\n\n~~~markdown\n# In code\n```\n# Still in code\n~~~\n\n## Real heading\n');
+  await page.getByRole('tab', { name: '大纲', exact: true }).click();
+  await expect(page.locator('#outline-list button')).toHaveText(['Setext heading', 'Real heading']);
+  await page.locator('#outline-list button').last().click();
+  await expect(visual(page).locator('h2')).toBeInViewport();
+});
+
+test('focus, typewriter, themes, and shortcut dialogs respond to their controls', async ({ page }) => {
+  await start(page);
+  await page.locator('#focus-mode').click();
+  await expect(page.locator('#sidebar')).toBeHidden();
+  await expect(page.locator('#focus-mode')).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#sidebar')).toBeVisible();
+  await expect(page.locator('#focus-mode')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#focus-mode')).not.toHaveClass(/active/);
+  await page.locator('#more-menu-toggle').click();
+  await expect(page.locator('#more-menu-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#more-menu-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await menu(page, 'typewriter');
+  await expect(page.locator('[data-action="typewriter"]')).toHaveAttribute('aria-checked', 'true');
+  const typewriterPadding = await page.locator('#editor').evaluate(element => parseFloat(getComputedStyle(element).paddingTop));
+  expect(typewriterPadding).toBeGreaterThan(200);
+  await menu(page, 'typewriter');
+  await expect(page.locator('[data-action="typewriter"]')).toHaveAttribute('aria-checked', 'false');
+  expect(await page.locator('#editor').evaluate(element => parseFloat(getComputedStyle(element).paddingTop))).toBeLessThan(typewriterPadding);
+  await page.locator('#theme-toggle').click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.locator('#theme-toggle').click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await menu(page, 'shortcuts');
+  await expect(page.locator('#shortcuts-dialog')).toBeVisible();
+  await page.locator('#close-shortcuts').click();
+  await expect(page.locator('#shortcuts-dialog')).toBeHidden();
+});
+
+test('source search wraps backwards, treats punctuation literally, and supports deletion', async ({ page }) => {
+  await start(page);
+  await openMarkdown(page, 'one [x] two [x] three [x] end');
+  await page.locator('#toggle-source').click();
+  await page.keyboard.press('ControlOrMeta+f');
+  await page.locator('#find-input').fill('[x]');
+  await page.locator('#find-prev').click();
+  await expect(page.locator('#find-count')).toHaveText('3 / 3');
+  await page.locator('#find-next').click();
+  await expect(page.locator('#find-count')).toHaveText('1 / 3');
+  await page.locator('#replace-input').fill('');
+  await page.locator('#replace-all').click();
+  await expect(page.locator('#find-count')).toHaveText('无匹配');
+  expect((await download(page, 'save')).content).toBe('one  two  three  end');
+  await page.locator('#find-input').fill('');
+  await page.locator('#replace-all').click();
+  expect((await download(page, 'save')).content).toBe('one  two  three  end');
+});
+
+test('case-insensitive source replacement keeps Unicode offsets and surrounding text intact', async ({ page }) => {
+  await start(page);
+  await openMarkdown(page, 'İstanbul 😀 NAME name.');
+  await page.locator('#toggle-source').click();
+  await page.keyboard.press('ControlOrMeta+f');
+  await page.locator('#find-input').fill('name');
+  await expect(page.locator('#find-count')).toHaveText('2 处匹配');
+  await page.locator('#replace-input').fill('word');
+  await page.locator('#replace-all').click();
+  expect((await download(page, 'save')).content).toBe('İstanbul 😀 word word.');
+});
+
+test('code language dialog updates saved fences and can cancel changes', async ({ page }) => {
+  await start(page);
+  await openMarkdown(page, '```javascript\nconst value = 1;\n```\n');
+  await visual(page).locator('.code-language').click();
+  await page.locator('#dialog-input').fill('typescript');
+  await page.locator('#dialog-confirm').click();
+  await expect(visual(page).locator('.code-language')).toHaveText('typescript');
+  await visual(page).locator('.code-language').click();
+  await page.locator('#dialog-input').fill('python');
+  await page.locator('#dialog-cancel').click();
+  expect((await download(page, 'save')).content).toContain('```typescript\nconst value = 1;');
+});
+
+test('native bootstrap activePath wins over restored selection and ready follows initialization', async ({ page }) => {
+  await page.addInitScript(() => {
+    const host = window as any;
+    const old = { id: 'old-draft', path: null, name: 'old.md', content: '# Restored draft', savedContent: '', dirty: true };
+    localStorage.setItem('typorax.documents.v1', JSON.stringify({ documents: [old], activeId: old.id }));
+    host.webkit = { messageHandlers: { typorax: { postMessage(message: any) {
+      const result = message.method === 'bootstrap' ? {
+        documents: [{ id: 'finder', path: '/test/finder.md', name: 'finder.md', content: '# Finder requested file' }],
+        folder: null, activePath: '/test/finder.md',
+      } : null;
+      if (message.method === 'ready') host.__readySnapshot = { name: document.querySelector('#document-name')?.textContent, ready: host.__typoraxReady };
+      queueMicrotask(() => host.__typoraxResolve({ id: message.id, result }));
+    } } } };
+  });
+  await start(page);
+  await expect(visual(page).locator('h1')).toHaveText('Finder requested file');
+  await expect.poll(() => page.evaluate(() => (window as any).__readySnapshot)).toEqual({ name: 'finder.md', ready: true });
+  await page.locator('#file-list .file-item').filter({ hasText: 'old' }).click();
+  await expect(visual(page)).toContainText('Restored draft');
+});
+
+test('cancelled native saves preserve dirty documents and Save-and-Close saves every document', async ({ page }) => {
+  await page.addInitScript(() => {
+    const host = window as any;
+    host.__nativeMessages = [];
+    host.__cancelSave = true;
+    host.webkit = { messageHandlers: { typorax: { postMessage(message: any) {
+      host.__nativeMessages.push(message);
+      let result: any = null;
+      if (message.method === 'bootstrap') result = { documents: [], folder: null };
+      if (message.method === 'saveFile' && !host.__cancelSave) result = { path: '/test/' + message.params.name, name: message.params.name };
+      queueMicrotask(() => host.__typoraxResolve({ id: message.id, result }));
+    } } } };
+  });
+  await start(page);
+  await page.locator('#new-document').click();
+  await setSource(page, '# First dirty draft');
+  await menu(page, 'saveAs');
+  await expect(page.locator('#save-indicator')).toHaveText('未保存');
+  await expect(source(page)).toHaveText('# First dirty draft');
+  const cancelled = await page.evaluate(() => (window as any).__nativeMessages.filter((message: any) => message.method === 'saveFile'));
+  expect(cancelled).toHaveLength(1);
+  expect(cancelled[0].params.saveAs).toBe(true);
+  await page.locator('#new-document').click();
+  await setSource(page, '# Second dirty draft');
+  await page.evaluate(() => (window as any).__typoraxCommand('saveAndClose'));
+  await expect.poll(() => page.evaluate(() => (window as any).__nativeMessages.filter((message: any) => message.method === 'saveFile').length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).__nativeMessages.some((message: any) => message.method === 'closeConfirmed'))).toBe(false);
+  await page.evaluate(() => { (window as any).__cancelSave = false; (window as any).__typoraxCommand('saveAndClose'); });
+  await expect.poll(() => page.evaluate(() => (window as any).__nativeMessages.filter((message: any) => message.method === 'closeConfirmed').length)).toBe(1);
+  const completed = await page.evaluate(() => (window as any).__nativeMessages.filter((message: any) => message.method === 'saveFile').slice(2));
+  expect(completed.map((message: any) => message.params.content)).toEqual(['# First dirty draft', '# Second dirty draft']);
+  await expect(page.locator('#file-list .file-meta')).toHaveText(['md', 'md', 'md']);
+});
+
+test('folder workspace opens a listed file through the native bridge', async ({ page }) => {
+  await page.addInitScript(() => {
+    const host = window as any;
+    host.__nativeMessages = [];
+    host.webkit = { messageHandlers: { typorax: { postMessage(message: any) {
+      host.__nativeMessages.push(message);
+      const result = message.method === 'bootstrap' ? { documents: [], folder: null }
+        : message.method === 'openFolder' ? { path: '/test/workspace', name: 'workspace', truncated: true, files: [
+          { path: '/test/workspace/first/note.md', name: 'note.md', relativePath: 'first/note.md' },
+          { path: '/test/workspace/second/note.md', name: 'note.md', relativePath: 'second/note.md' },
+        ] }
+        : message.method === 'readFile' ? { id: 'workspace-note', path: message.params.path, name: 'note.md', content: '# Workspace note' } : null;
+      queueMicrotask(() => host.__typoraxResolve({ id: message.id, result }));
+    } } } };
+  });
+  await start(page);
+  await page.locator('#open-folder').click();
+  await expect(page.locator('#folder-label')).toHaveText('workspace');
+  await expect(page.locator('#toast')).toContainText('文件列表已截断');
+  await expect(page.locator('#file-list .file-name')).toContainText(['first/note', 'second/note']);
+  await page.locator('#file-list .file-item').filter({ hasText: 'second/note' }).click();
+  await expect(visual(page).locator('h1')).toHaveText('Workspace note');
+  await expect(page.locator('#document-name')).toHaveText('note.md');
+  await expect(page.locator('#file-list .is-active')).toContainText('second/note');
+  expect(await page.evaluate(() => (window as any).__nativeMessages.find((message: any) => message.method === 'readFile').params.path)).toBe('/test/workspace/second/note.md');
+});

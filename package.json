@@ -11,7 +11,10 @@
     "build:mac": "npm run build && npm run licenses && bash scripts/build-macos.sh",
     "test": "playwright test",
     "licenses": "node scripts/licenses.mjs",
-    "package:mac": "npm run build:mac && bash scripts/package-macos.sh"
+    "package:mac": "npm run build:mac && bash scripts/package-macos.sh",
+    "docs:check": "node scripts/check-release.mjs",
+    "verify:local": "bash scripts/verify-local.sh",
+    "docs:screenshots": "npm run build && node scripts/screenshots.mjs"
   },
   "dependencies": {
     "@tiptap/core": "3.32.0",

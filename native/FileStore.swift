@@ -70,7 +70,8 @@ final class FileStore {
                 continue
             }
             guard allowed.contains(child.pathExtension.lowercased()), isAdmitted(child) else { continue }
-            files.append(["path": child.path, "name": child.lastPathComponent, "relativePath": String(child.path.dropFirst(url.path.count + 1))])
+            let resolved = canonical(child)
+            files.append(["path": resolved.path, "name": resolved.lastPathComponent, "relativePath": String(resolved.path.dropFirst(url.path.count + 1))])
         }
         files.sort { ($0["relativePath"] ?? "").localizedStandardCompare($1["relativePath"] ?? "") == .orderedAscending }
         defaults.set(url.path, forKey: "lastFolderPath")
@@ -104,6 +105,7 @@ final class FileStore {
             guard current == previous else { throw TyporaXError.invalid("文件已被其他程序修改。为保护外部修改，本次保存已取消；请另存为或重新打开。") }
         }
         let bytes = Data(content.utf8)
+        guard bytes.count <= maximumDocumentBytes else { throw TyporaXError.invalid("文稿过大，当前支持最大 \(maximumDocumentBytes / 1024 / 1024) MiB；请拆分文稿或减少内嵌图片。") }
         try bytes.write(to: url, options: .atomic)
         admitFile(url)
         readVersions[url.path] = bytes

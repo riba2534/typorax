@@ -16,6 +16,7 @@ jobs:
           node-version: 26
           cache: npm
       - run: npm ci
+      - run: npm run docs:check
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm test
@@ -35,6 +36,7 @@ jobs:
       - run: npm ci
       - run: npm run build:mac
       - run: build/TyporaX.app/Contents/MacOS/TyporaX --web-smoke-test
+      - run: build/TyporaX.app/Contents/MacOS/TyporaX --integration-self-test
       - run: build/TyporaX.app/Contents/MacOS/TyporaX --pdf-self-test
       - run: ditto -c -k --sequesterRsrc --keepParent build/TyporaX.app build/TyporaX-macOS.zip
       - uses: actions/upload-artifact@v4

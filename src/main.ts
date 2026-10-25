@@ -280,9 +280,10 @@ function toggleSource() {
 function renderFiles() {
   const list = $('file-list'); list.replaceChildren();
   const filter = ($<HTMLInputElement>('file-search')?.value || '').toLowerCase();
+  const folderNames = new Map(folder?.files.map(file => [file.path, file.relativePath || file.name]));
   const rows: { doc?: DocumentState; path?: string; name: string }[] = [
-    ...documents.map(doc => ({ doc, path: doc.path || undefined, name: doc.name })),
-    ...(folder?.files || []).filter(f => !documents.some(d => d.path === f.path)).map(f => ({ ...f })),
+    ...documents.map(doc => ({ doc, path: doc.path || undefined, name: (doc.path && folderNames.get(doc.path)) || doc.name })),
+    ...(folder?.files || []).filter(f => !documents.some(d => d.path === f.path)).map(f => ({ ...f, name: f.relativePath || f.name })),
   ];
   for (const row of rows.filter(r => r.name.toLowerCase().includes(filter))) {
     const el = document.createElement('button'); el.type = 'button';
@@ -349,7 +350,10 @@ async function openFile() {
 }
 async function openFolder() {
   const result = await call<Folder | null>('openFolder');
-  if (result) { folder = result; renderFiles(); setSidebar('files'); toast('已打开 ' + result.name); }
+  if (result) {
+    folder = result; renderFiles(); setSidebar('files');
+    toast('已打开 ' + result.name + (result.truncated ? '；文件列表已截断，部分文档未显示。' : ''));
+  }
 }
 function setSidebar(tab: string) {
   sidebarTab = tab;
@@ -426,12 +430,16 @@ type Match = { from: number; to: number };
 let matches: Match[] = [];
 let matchIndex = -1;
 function findMatches(): Match[] {
-  const query = $<HTMLInputElement>('find-input').value.toLocaleLowerCase();
+  const query = $<HTMLInputElement>('find-input').value;
   if (!query) return [];
   const result: Match[] = [];
+  // Match against the original text: case folding can expand characters and change offsets.
+  const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
   const scan = (text: string, offset: number) => {
-    const lower = text.toLocaleLowerCase();
-    for (let index = lower.indexOf(query); index >= 0 && result.length < 5000; index = lower.indexOf(query, index + Math.max(query.length, 1))) result.push({ from: offset + index, to: offset + index + query.length });
+    pattern.lastIndex = 0;
+    for (let match = pattern.exec(text); match && result.length < 5000; match = pattern.exec(text)) {
+      result.push({ from: offset + match.index, to: offset + match.index + match[0].length });
+    }
   };
   if (sourceMode) scan(source.state.doc.toString(), 0);
   else editor.state.doc.descendants((node, pos) => { if (node.isTextblock) { scan(node.textBetween(0, node.content.size, '', '\ufffc'), pos + 1); return false; } return true; });
@@ -444,7 +452,7 @@ function refreshFind() {
 function selectMatch(direction = 1) {
   matches = findMatches();
   if (!matches.length) { $('find-count').textContent = '无匹配'; return; }
-  matchIndex = (matchIndex + direction + matches.length) % matches.length;
+  matchIndex = matchIndex < 0 ? (direction > 0 ? 0 : matches.length - 1) : (matchIndex + direction + matches.length) % matches.length;
   const m = matches[matchIndex];
   if (sourceMode) source.dispatch({ selection: { anchor: m.from, head: m.to }, effects: EditorView.scrollIntoView(m.from, { y: 'center' }) });
   else editor.chain().setTextSelection(m).scrollIntoView().run();
@@ -509,8 +517,17 @@ async function exportDocument(kind: 'exportHTML' | 'exportPDF') {
   const result = await call(kind, { html, name: current().name });
   if (result) toast('已导出到 ' + result.path);
 }
+function setFocusMode(focused: boolean) {
+  document.body.classList.toggle('is-focus', focused);
+  $('focus-mode').classList.toggle('active', focused);
+  $('focus-mode').setAttribute('aria-pressed', String(focused));
+}
+function setMenuOpen(open: boolean) {
+  $('more-menu').hidden = !open;
+  $('more-menu-toggle').setAttribute('aria-expanded', String(open));
+}
 async function command(action: string) {
-  $('more-menu').hidden = true;
+  setMenuOpen(false);
   switch (action) {
     case 'new': newDocument(); break;
     case 'open': await openFile(); break;
@@ -519,8 +536,12 @@ async function command(action: string) {
     case 'saveAs': await save(true); break;
     case 'source': toggleSource(); break;
     case 'find': showFind(); break;
-    case 'focus': document.body.classList.toggle('is-focus'); $('focus-mode').classList.toggle('active'); break;
-    case 'typewriter': document.body.classList.toggle('is-typewriter'); toast(document.body.classList.contains('is-typewriter') ? '打字机模式已开启' : '打字机模式已关闭'); break;
+    case 'focus': setFocusMode(!document.body.classList.contains('is-focus')); break;
+    case 'typewriter': {
+      const enabled = document.body.classList.toggle('is-typewriter');
+      document.querySelector('[data-action="typewriter"]')?.setAttribute('aria-checked', String(enabled));
+      toast(enabled ? '打字机模式已开启' : '打字机模式已关闭'); break;
+    }
     case 'theme': toggleTheme(); break;
     case 'exportHTML': case 'exportPDF': await exportDocument(action); break;
     case 'insertTable': if (sourceMode) insertMarkdown('\n| 标题 | 标题 |\n| --- | --- |\n| 内容 | 内容 |\n'); else await format('table'); break;
@@ -538,16 +559,16 @@ button('new-document', newDocument); button('open-file', openFile); button('open
 button('toggle-sidebar', () => document.body.classList.toggle('sidebar-hidden'));
 button('toggle-source', toggleSource); button('theme-toggle', toggleTheme);
 button('focus-mode', () => command('focus'));
-button('more-menu-toggle', () => { $('more-menu').hidden = !$('more-menu').hidden; });
+button('more-menu-toggle', () => setMenuOpen(Boolean($('more-menu').hidden)));
 button('close-shortcuts', () => $<HTMLDialogElement>('shortcuts-dialog').close());
 document.querySelectorAll<HTMLElement>('[data-action]').forEach(el => el.addEventListener('click', () => safe(() => command(el.dataset.action!))));
 document.querySelectorAll<HTMLElement>('[data-sidebar-tab]').forEach(el => el.addEventListener('click', () => setSidebar(el.dataset.sidebarTab!)));
 $('file-search').addEventListener('input', renderFiles);
 document.addEventListener('click', event => {
-  if (!(event.target as HTMLElement).closest('#more-menu,#more-menu-toggle')) $('more-menu').hidden = true;
+  if (!(event.target as HTMLElement).closest('#more-menu,#more-menu-toggle')) setMenuOpen(false);
 });
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') { $('find-panel').hidden = true; $('more-menu').hidden = true; document.body.classList.remove('is-focus'); }
+  if (event.key === 'Escape') { $('find-panel').hidden = true; setMenuOpen(false); setFocusMode(false); }
   if (!(event.metaKey || event.ctrlKey) || event.defaultPrevented || document.querySelector('dialog[open]')) return;
   const key = event.key.toLowerCase();
   let action = '';
@@ -573,7 +594,7 @@ async function start() {
     const value = JSON.parse(localStorage.getItem(STORAGE) || 'null');
     if (value?.documents?.every((d: any) => typeof d.id === 'string' && typeof d.content === 'string' && typeof d.name === 'string' && typeof d.savedContent === 'string')) restored = value;
   } catch { /* first run or corrupt draft cache */ }
-  const boot = await call<{ documents: NativeDocument[]; folder: Folder | null }>('bootstrap').catch(error => { fail(error); return { documents: [], folder: null }; });
+  const boot = await call<{ documents: NativeDocument[]; folder: Folder | null; activePath?: string | null }>('bootstrap').catch(error => { fail(error); return { documents: [], folder: null, activePath: null }; });
   folder = boot.folder;
   // Only dirty drafts supersede disk contents. Native FileStore retains disk fingerprints.
   if (restored) {
@@ -592,9 +613,11 @@ async function start() {
   }
   for (const doc of boot.documents || []) if (!documents.some(d => d.path === doc.path)) documents.push({ ...doc, id: documents.some(d => d.id === doc.id) ? crypto.randomUUID() : doc.id, savedContent: doc.content, dirty: false });
   if (!documents.length) documents.push({ id: crypto.randomUUID(), path: null, name: '欢迎使用 TyporaX.md', content: WELCOME, savedContent: WELCOME, dirty: false });
-  activate(documents.some(d => d.id === restored?.activeId) ? restored!.activeId : documents[0].id);
+  const requested = boot.activePath && documents.find(d => d.path === boot.activePath);
+  activate(requested ? requested.id : documents.some(d => d.id === restored?.activeId) ? restored!.activeId : documents[0].id);
   setSidebar('files');
   $('status-message').textContent = native ? '本地文件 · UTF-8' : '浏览器预览 · 本地草稿';
   (window as any).__typoraxReady = true;
+  await call('ready');
 }
 void start().catch(fail);

@@ -28,16 +28,23 @@ func runFileStoreTests() throws {
     try expectFailure("unselected save path must be refused") { _ = try store.save(unknown, content: "No") }
     _ = try store.save(unknown, content: "# Chosen by Save As", pickerAuthorized: true)
     try assert(FileManager.default.fileExists(atPath: unknown.path), "picker-authorized save must create file")
+    try expectFailure("oversized document save must be refused") {
+        _ = try store.save(unknown, content: String(repeating: "a", count: store.maximumDocumentBytes + 1))
+    }
+    try assert(try String(contentsOf: unknown, encoding: .utf8) == "# Chosen by Save As", "oversized save must preserve the original file")
     let workspace = root.appendingPathComponent("workspace")
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
     let inside = workspace.appendingPathComponent("inside.md")
     try Data("inside".utf8).write(to: inside)
     try FileManager.default.createSymbolicLink(at: workspace.appendingPathComponent("escape.md"), withDestinationURL: doc)
     let second = FileStore(defaults: defaults); second.admitFolder(workspace)
-    _ = try second.document(inside)
+    let insideDocument = try second.document(inside)
     try expectFailure("symlink escaping workspace must be refused") { _ = try second.document(workspace.appendingPathComponent("escape.md")) }
     let listing = try second.folder(workspace)
     try assert((listing["files"] as? [[String: String]])?.count == 1, "folder listing must skip symlinks")
+    let listedFile = (listing["files"] as? [[String: String]])?.first
+    try assert(listedFile?["path"] == insideDocument["path"] as? String, "folder entries and direct reads must share canonical path identity")
+    try assert(listedFile?["relativePath"] == "inside.md", "folder display path must be relative to the canonical workspace")
     let invalid = workspace.appendingPathComponent("invalid.md"); try Data([0xff, 0xfe, 0xff]).write(to: invalid)
     try expectFailure("invalid UTF-8 must be refused") { _ = try second.document(invalid) }
     try expectFailure("image paths cannot escape document directory") { _ = try second.resolveImage(path: "../../private.png", documentPath: inside.path) }
@@ -53,6 +60,6 @@ func runFileStoreTests() throws {
     _ = try restored.document(doc)
     try expectFailure("persisted authorization must not follow replacement symlinks") { _ = try restored.document(pin) }
     print("  ✓ persisted authorization and replacement-symlink refusal")
-    print("  ✓ file admission, UTF-8 read, atomic save, external-edit conflict")
-    print("  ✓ Save As, folder admission, symlink escape, invalid encoding, image scope")
+    print("  ✓ file admission, UTF-8 read, atomic save, external-edit conflict, oversized save refusal")
+    print("  ✓ Save As, folder admission and path identity, symlink escape, invalid encoding, image scope")
 }

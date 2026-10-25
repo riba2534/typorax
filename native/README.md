@@ -10,7 +10,8 @@ The editor sends `window.webkit.messageHandlers.typorax.postMessage({id, method,
 
 | Method | Parameters | Result |
 | --- | --- | --- |
-| `bootstrap` | none | `{documents, folder}`; restores the last saved document/workspace |
+| `bootstrap` | none | `{documents, folder, activePath}`; restores state and includes queued Finder opens |
+| `ready` | none | `{ok:true}`; frontend has restored drafts and activated `activePath`, so queued opens/menu commands can be delivered |
 | `openFile` | none | `{id,path,name,content}` or null when cancelled |
 | `openFolder` | none | `{path,name,files:[{path,name,relativePath}],truncated}` or null |
 | `refreshFolder` | `{path}` | the updated admitted folder listing |
@@ -34,7 +35,9 @@ Only native-picker/OS-selected files and workspaces are admitted. The most recen
 
 The frontend owns draft recovery and tab state. Before restoring a dirty saved document, it should read the current file and compare it with its last saved content; an externally changed file must be preserved, with recovered edits kept separately.
 
-Document reads are limited to 32 MiB of UTF-8 text. Raster image insertion supports PNG/JPEG/GIF/WebP/BMP, up to 20 MiB, and embeds the bytes in Markdown. Workspace scanning skips hidden/package directories and symlinks, limits traversal to 20,000 entries and reports at most 2,000 documents with explicit `truncated` state.
+The frontend prioritizes the explicit `bootstrap.activePath` over a restored active tab. It calls `ready` only after restoration and activation finish. The host keeps later Finder opens and menu commands queued until this handshake, including during a WebKit reload.
+
+Document reads and saves are limited to 32 MiB of UTF-8 text; an oversized save preserves the existing file. Raster image insertion supports PNG/JPEG/GIF/WebP/BMP, up to 20 MiB, and embeds the bytes in Markdown. Workspace scanning skips hidden/package directories and symlinks, limits traversal to 20,000 entries and reports at most 2,000 documents with explicit `truncated` state.
 
 ## PDF
 
@@ -46,6 +49,11 @@ PDF export uses an isolated, nonpersistent WKWebView with page-authored JavaScri
 build/TyporaX.app/Contents/MacOS/TyporaX --self-test
 build/TyporaX.app/Contents/MacOS/TyporaX --pdf-self-test
 build/TyporaX.app/Contents/MacOS/TyporaX --web-smoke-test
+build/TyporaX.app/Contents/MacOS/TyporaX --integration-self-test
 ```
 
-File tests run in a unique temporary directory and isolated preferences suite. PDF tests generate a temporary multi-page document and check its text. Web smoke tests briefly open the application, check that the editable surface and bridge initialized without JavaScript errors, and exit. Normal launches have no test hooks enabled.
+File tests run in a unique temporary directory and isolated preferences suite. PDF tests generate a temporary multi-page document and check its text. Web smoke tests use an isolated preferences suite and nonpersistent WKWebView, briefly open the application, check that the editable surface and bridge initialized without JavaScript errors, and exit. Normal launches have no test hooks enabled.
+
+The integration entry point runs the bundled production frontend in a nonpersistent WKWebView with an isolated UserDefaults suite. It drives DOM editing and production controls, crosses the real JavaScript/Swift bridge, and verifies file contents, folder authorization, image rendering, HTML/PDF output, external-edit rejection, and saving all dirty documents before the native window actually closes. It also exercises Finder opens both before bootstrap and between bootstrap and `ready`. Its files and preferences are deleted on completion; it never uses the normal app's drafts or file authorization history.
+
+Only system file-picker results and save/cancel close-alert choices are injected. Native picker presentation, physical keyboard/mouse input, and macOS permission dialogs are **not** verified by this automated entry point. No test IPC server or remote-control endpoint is installed. The compiler source list must include `NativeIntegrationTests.swift`.

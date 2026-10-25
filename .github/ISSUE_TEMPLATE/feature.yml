@@ -1,0 +1,11 @@
+name: 功能建议
+description: 描述你的写作场景与希望改善的体验
+title: "[Feature] "
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 当前操作哪里不方便，希望获得什么结果？
+    validations:
+      required: true

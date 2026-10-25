@@ -2,7 +2,9 @@
 
 请先用 Issue 描述具体问题、复现步骤、macOS/CPU 架构和样例 Markdown。样例应去掉个人内容。
 
-运行 `npm ci` 和 `npm run dev` 开始开发。修改编辑行为时，请在 `tests/editor.spec.ts` 添加能体现用户操作的测试，并运行 `npm run build`、`npm test`。修改原生宿主后运行 `npm run build:mac` 和相关原生验证入口。
+运行 `npm ci` 和 `npm run dev` 开始开发。修改编辑行为时，请在 `tests/editor.spec.ts` 添加能体现用户操作的测试。修改原生宿主时，补充必要的文件或集成验证。
+
+**先完成本机验收，再提交和推送。** 运行 `npm run verify:local`，确认所有功能回归、生产构建、原生文件/集成/PDF、签名和 DMG 检查通过。发现失败先修复，不把推送后的 CI 当作第一次验收。
 
 特别关注以下约束：
 

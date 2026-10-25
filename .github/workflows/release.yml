@@ -1,0 +1,28 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+      - run: npm run verify:local
+      - name: Publish verified artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" build/TyporaX-*-macOS-arm64.dmg build/SHA256SUMS \
+            --verify-tag --title "TyporaX $RELEASE_TAG" --notes-file docs/release-notes.md
