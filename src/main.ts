@@ -1,4 +1,5 @@
 import { Editor } from '@tiptap/core';
+import { EditorState as ProseMirrorState } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -194,7 +195,10 @@ const editor = new Editor({
 });
 const source = new EditorView({
   parent: $('source-editor'),
-  state: EditorState.create({ doc: '', extensions: [
+  state: createSourceState(''),
+});
+function createSourceState(content: string) {
+  return EditorState.create({ doc: content, extensions: [
     basicSetup, markdown(), EditorView.lineWrapping, search({ top: true }), keymap.of(searchKeymap),
     theme.of(document.documentElement.dataset.theme === 'dark' ? oneDark : []),
     EditorView.contentAttributes.of({ 'aria-label': 'Markdown 源码编辑器', spellcheck: 'false' }),
@@ -205,10 +209,17 @@ const source = new EditorView({
         $('cursor-position').textContent = 'Ln ' + line.number + ', Col ' + (update.state.selection.main.head - line.from + 1);
       }
     }),
-  ] }),
-});
+  ] });
+}
 function setSource(value: string) {
-  source.dispatch({ changes: { from: 0, to: source.state.doc.length, insert: value } });
+  source.setState(createSourceState(value));
+}
+function loadVisual(content: string) {
+  editor.commands.setContent(content, { contentType: 'markdown', emitUpdate: false });
+  // Each document/mode load starts a separate history. Undo must never reveal another file.
+  editor.view.updateState(ProseMirrorState.create({
+    doc: editor.state.doc, schema: editor.schema, plugins: editor.state.plugins,
+  }));
 }
 function newDocument() {
   const number = documents.filter(d => d.name.startsWith('未命名')).length + 1;
@@ -236,7 +247,7 @@ function activate(id: string) {
   loading = true;
   sourceReason = sourceOnlyReason(doc.content);
   setSource(doc.content);
-  try { editor.commands.setContent(doc.content, { contentType: 'markdown', emitUpdate: false }); }
+  try { loadVisual(doc.content); }
   catch { sourceReason = '此文档暂不能在可视化模式中解析，源码已完整保留。'; }
   sourceMode = !!sourceReason || sourceMode;
   loading = false;
@@ -259,7 +270,7 @@ function toggleSource() {
     sourceReason = sourceOnlyReason(current().content);
     if (sourceReason) { toast(sourceReason); return; }
     loading = true;
-    try { editor.commands.setContent(current().content, { contentType: 'markdown', emitUpdate: false }); }
+    try { loadVisual(current().content); }
     catch { loading = false; toast('解析失败，内容已完整保留在源码模式。'); return; }
     loading = false; sourceMode = false;
   } else { loading = true; setSource(current().content); loading = false; sourceMode = true; }
@@ -469,7 +480,7 @@ async function exportHTML(): Promise<string> {
   const content = current().content;
   if (sourceMode && !sourceOnlyReason(content)) {
     loading = true;
-    try { editor.commands.setContent(content, { contentType: 'markdown', emitUpdate: false }); } finally { loading = false; }
+    try { loadVisual(content); } finally { loading = false; }
   }
   const container = document.createElement('div');
   container.innerHTML = sourceOnlyReason(content) ? '<pre>' + escapeHTML(content) + '</pre>' : editor.getHTML();

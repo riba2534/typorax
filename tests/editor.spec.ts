@@ -383,3 +383,47 @@ test('editing during an asynchronous save prevents native close confirmation', a
   await expect.poll(() => page.evaluate(() => (window as any).__nativeMessages.filter((request: any) => request.method === 'closeConfirmed').length)).toBe(1);
   await expect(page.locator('#save-indicator')).toHaveText('已保存');
 });
+
+for (const mode of ['visual', 'source'] as const) {
+  test(`undo stays inside the current document in ${mode} mode`, async ({ page }) => {
+    await start(page);
+    await openMarkdown(page, '# Alpha private\n\nOriginal alpha content.', 'alpha.md');
+    if (mode === 'source') await page.locator('#toggle-source').click();
+    const surface = mode === 'visual' ? visual(page) : source(page);
+    await surface.press('ControlOrMeta+End');
+    await surface.pressSequentially(' Alpha unsaved change.');
+    await expect(surface).toContainText('Alpha unsaved change.');
+
+    await page.locator('#new-document').click();
+    await expect(page.locator('#document-name')).toHaveText('未命名.md');
+    await surface.pressSequentially('# Beta fresh');
+    await surface.press('Enter');
+    await surface.pressSequentially('Only beta editing.');
+    await expect(surface).toContainText('Only beta editing.');
+    for (let step = 0; step < 6; step++) {
+      await surface.press('ControlOrMeta+z');
+      await expect(surface).not.toContainText('Alpha');
+      await expect(surface).not.toContainText('Original alpha content.');
+    }
+    await expect(surface).toHaveText('');
+
+    await surface.pressSequentially('# Beta retained');
+    await surface.press('Enter');
+    await surface.pressSequentially('This belongs to beta.');
+    const betaContent = (await download(page, 'save')).content;
+    await page.locator('#file-list .file-item').filter({ hasText: 'alpha' }).click();
+    await expect(surface).toContainText('Alpha unsaved change.');
+    await surface.press('ControlOrMeta+End');
+    await surface.pressSequentially(' Another alpha edit.');
+    await page.locator('#file-list .file-item').filter({ hasText: '未命名' }).click();
+    await expect(surface).toContainText('This belongs to beta.');
+    await surface.press('ControlOrMeta+End');
+    await surface.pressSequentially(' Beta follow-up.');
+    await surface.press('ControlOrMeta+z');
+    expect((await download(page, 'save')).content).toBe(betaContent);
+    // Exhausting the newly loaded history must not undo loading a different file.
+    for (let step = 0; step < 3; step++) await surface.press('ControlOrMeta+z');
+    expect((await download(page, 'save')).content).toBe(betaContent);
+    await expect(surface).not.toContainText('alpha');
+  });
+}
